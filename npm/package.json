@@ -1,0 +1,23 @@
+{
+  "name": "coffre-cli",
+  "version": "0.0.0",
+  "description": "Variables d'environnement chiffrées, hébergées en France",
+  "license": "MIT",
+  "bin": {
+    "coffre": "bin/coffre.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/coffre.js",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coffre-dev/coffre-cli.git"
+  }
+}

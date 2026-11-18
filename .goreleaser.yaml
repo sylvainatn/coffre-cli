@@ -1,0 +1,45 @@
+version: 2
+project_name: coffre
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - main: ./cmd/coffre
+    binary: coffre
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      # URL de l'API de production, à adapter
+      - -X main.defaultAPIURL=https://api.coffre.example
+
+archives:
+  - formats: [tar.gz]
+    # Nom stable, utilisé par le wrapper npm : coffre_<os>_<arch>.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+# Homebrew : `brew install <org>/tap/coffre`
+# Nécessite un dépôt <org>/homebrew-tap et un secret HOMEBREW_TAP_TOKEN.
+brews:
+  - name: coffre
+    repository:
+      owner: coffre-dev
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://coffre.example
+    description: Variables d'environnement chiffrées, hébergées en France
+    license: MIT
+    test: |
+      system "#{bin}/coffre", "version"

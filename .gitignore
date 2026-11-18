@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/npm/bin/coffre
+/npm/bin/coffre.exe
+/npm/node_modules/
+.DS_Store
