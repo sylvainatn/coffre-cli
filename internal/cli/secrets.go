@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/coffre-dev/coffre-cli/internal/api"
+	"github.com/coffre-dev/coffre-cli/internal/envformat"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +22,7 @@ func newSecretsCmd() *cobra.Command {
 	c.PersistentFlags().StringVarP(&project, "project", "p", "", "ID du projet (défaut : .coffre.json)")
 	c.PersistentFlags().StringVarP(&env, "env", "e", "", "environnement (défaut : .coffre.json)")
 
-	target := func() (*api.Client, string, string, error) {
+	var target targetFunc = func() (*api.Client, string, string, error) {
 		projectID, envSlug, err := resolveTarget(project, env)
 		if err != nil {
 			return nil, "", "", err
@@ -106,13 +107,22 @@ func newSecretsCmd() *cobra.Command {
 		},
 	}
 
+	var output, format, name string
 	download := &cobra.Command{
-		Use:   "download",
-		Short: "Affiche les secrets au format .env (pour Docker, CI…)",
-		Long: `Écrit les secrets au format dotenv sur la sortie standard.
-Attention : rediriger vers un fichier recrée un .env en clair sur le disque.`,
-		Example: `  coffre secrets download --env production > /run/secrets/app.env`,
-		Args:    cobra.NoArgs,
+		Use:     "download",
+		Aliases: []string{"export"},
+		Short:   "Exporte les secrets (.env, JSON, YAML, Docker, Kubernetes)",
+		Long: `Écrit tous les secrets de l'environnement, sur la sortie standard par défaut.
+
+Avec -o, le fichier est remplacé entièrement, écrit avec des droits 0600 et ajouté
+au .gitignore s'il ne l'est pas. Pour compléter un .env existant sans l'écraser :
+coffre secrets pull. Pour ne pas avoir de fichier du tout : coffre run -- <commande>.
+
+Formats : dotenv (défaut), json, yaml, docker (docker run --env-file), k8s (Secret).`,
+		Example: `  coffre secrets download --env production > /run/secrets/app.env
+  coffre secrets export -o .env
+  coffre secrets export --env production --format k8s --name mon-app | kubectl apply -f -`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, projectID, envSlug, err := target()
 			if err != nil {
@@ -122,14 +132,33 @@ Attention : rediriger vers un fichier recrée un .env en clair sur le disque.`,
 			if err != nil {
 				return err
 			}
-			for _, s := range secrets {
-				fmt.Printf("%s=%s\n", s.Key, dotenvQuote(s.Value))
+			vars := make([]envformat.Variable, len(secrets))
+			for i, s := range secrets {
+				vars[i] = envformat.Variable{Key: s.Key, Value: s.Value}
 			}
+			if name == "" {
+				name = "coffre-" + envSlug
+			}
+			content, err := envformat.Render(format, vars, name)
+			if err != nil {
+				return err
+			}
+			if output == "" || output == "-" {
+				fmt.Print(content)
+				return nil
+			}
+			if err := writeLocal(output, content); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "✓ %d variable(s) de %s/%s écrite(s) dans %s\n", len(vars), projectID, envSlug, output)
 			return nil
 		},
 	}
+	download.Flags().StringVarP(&output, "output", "o", "", "fichier à écrire (défaut : sortie standard)")
+	download.Flags().StringVar(&format, "format", "dotenv", "format : "+strings.Join(envformat.Formats, ", "))
+	download.Flags().StringVar(&name, "name", "", "nom du Secret Kubernetes (défaut : coffre-<env>)")
 
-	c.AddCommand(list, set, del, download)
+	c.AddCommand(list, set, del, download, newDiffCmd(target), newPullCmd(target), newPushCmd(target))
 	return c
 }
 
@@ -138,9 +167,4 @@ func mask(v string) string {
 		return "••••"
 	}
 	return v[:2] + strings.Repeat("•", 6)
-}
-
-func dotenvQuote(v string) string {
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, `$`, `\$`)
-	return `"` + r.Replace(v) + `"`
 }
