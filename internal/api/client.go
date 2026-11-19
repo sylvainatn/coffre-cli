@@ -190,6 +190,24 @@ func (c *Client) SetSecrets(ctx context.Context, projectID, env string, secrets 
 	return c.do(ctx, "PUT", secretsPath(projectID, env), map[string]any{"secrets": secrets}, nil)
 }
 
+// UpsertResult : en mode create_only, ce qui a été créé et ce qui existait déjà.
+type UpsertResult struct {
+	Count   int      `json:"count"`
+	Created []string `json:"created"`
+	Skipped []string `json:"skipped"`
+}
+
+// CreateMissingSecrets crée uniquement les secrets absents de Coffre, sans jamais écraser
+// une valeur existante (la vérification est faite par l'API, dans la même transaction).
+func (c *Client) CreateMissingSecrets(ctx context.Context, projectID, env string, secrets []Secret) (*UpsertResult, error) {
+	var out UpsertResult
+	body := map[string]any{"secrets": secrets, "mode": "create_only"}
+	if err := c.do(ctx, "PUT", secretsPath(projectID, env), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) DeleteSecret(ctx context.Context, projectID, env, key string) error {
 	return c.do(ctx, "DELETE", secretsPath(projectID, env)+"/"+url.PathEscape(key), nil, nil)
 }

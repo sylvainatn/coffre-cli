@@ -15,8 +15,8 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{ .Version }}
-      # URL de l'API de production, à adapter
-      - -X main.defaultAPIURL=https://api.coffre.example
+      # URL de l'API de production
+      - -X main.defaultAPIURL=https://api.sylvainanton.fr
 
 archives:
   - formats: [tar.gz]
