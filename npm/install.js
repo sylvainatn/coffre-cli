@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const REPO = process.env.COFFRE_REPO || "coffre-dev/coffre-cli";
+const REPO = process.env.COFFRE_REPO || "sylvainatn/coffre-cli";
 const { version } = require("./package.json");
 
 const PLATFORMS = { darwin: "darwin", linux: "linux", win32: "windows" };

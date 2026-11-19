@@ -14,7 +14,7 @@ go install github.com/coffre-dev/coffre-cli/cmd/coffre@latest
 
 ```bash
 coffre login                           # ouvre le navigateur pour relier la CLI à votre compte
-coffre init proj_12345 --env development   # crée .coffre.json (sans secret, à commiter)
+coffre init                            # choisit (ou crée) le projet : crée .coffre.json (sans secret, à commiter)
 coffre run -- npm run dev              # lance l'app avec les secrets injectés
 ```
 
@@ -23,7 +23,7 @@ coffre run -- npm run dev              # lance l'app avec les secrets injectés
 | `coffre login [--token cfc_…] [--no-browser]` | Connexion via le navigateur (device flow) ou un jeton existant |
 | `coffre logout` | Révoque le jeton côté serveur et l'efface du poste |
 | `coffre whoami` | Compte connecté |
-| `coffre init <projectId> [-e env]` | Associe le dossier à un projet |
+| `coffre init [projectId] [-e env] [--create nom] [--push] [--agents]` | Associe le dossier à un projet : choix interactif sans argument, `--create` pour en créer un, `--push` pour y envoyer le `.env` du dossier |
 | `coffre run [-e env] [-p projet] [--keep-existing] [--file f] -- <cmd>` | Lance une commande avec les secrets |
 | `coffre secrets ls [--reveal]` | Liste les secrets (masqués par défaut) |
 | `coffre secrets set K=V …` | Crée / met à jour |
@@ -32,6 +32,10 @@ coffre run -- npm run dev              # lance l'app avec les secrets injectés
 | `coffre secrets pull [-f .env] [--overwrite] [--dry-run]` | Ajoute au `.env` les variables de Coffre qu'il n'a pas |
 | `coffre secrets push [-f .env] [--update] [--dry-run] [-y]` | Envoie dans Coffre les variables du `.env` qu'il n'a pas |
 | `coffre secrets download` / `export [-o f] [--format …]` | Exporte : `dotenv`, `json`, `yaml`, `docker`, `k8s` |
+| `coffre agent setup` | Écrit les instructions pour les agents IA (`AGENTS.md`, skill Claude Code) |
+| `coffre agent status` | Agent IA détecté, et ce qu'il a le droit de faire ici |
+
+`--json` est disponible sur `init`, `whoami`, `secrets list`, `diff`, `pull`, `push` et `agent` : résultat lisible par une machine sur la sortie standard, erreurs sur la sortie d'erreur avec un code non nul. Les valeurs des secrets n'y figurent jamais (sauf `list --reveal --json`).
 
 Les environnements acceptent des alias : `dev`, `stg`/`preprod`, `prod`.
 
@@ -60,7 +64,7 @@ Pour Docker Compose, on peut aussi se passer de fichier en listant les variables
 
 | Situation | Commande |
 | --- | --- |
-| Migrer un projet qui a déjà un `.env` | `coffre init <projet>` → `coffre secrets push` → supprimer le `.env` |
+| Migrer un projet qui a déjà un `.env` | `coffre init --create "Mon projet" --push` → supprimer le `.env` |
 | Un collègue a ajouté une variable | `coffre secrets pull` (ou rien à faire avec `coffre run`) |
 | J'ai ajouté une variable en local | `coffre secrets push` |
 | Pourquoi ça marche chez moi et pas en staging ? | `coffre secrets diff --env staging` |
@@ -72,6 +76,31 @@ Règles communes :
 - **`pull`** ajoute les variables manquantes en fin de fichier (commentaires, ordre et valeurs locales conservés). Une valeur locale différente n'est remplacée qu'avec `--overwrite`, ou après confirmation variable par variable dans un terminal.
 - **`push`** n'écrase jamais une variable existante, même créée entre-temps par un collègue (l'API vérifie et écrit dans une seule transaction). `--update` envoie aussi les valeurs différentes ; l'ancienne valeur reste dans l'historique. En staging et en production, une confirmation est demandée (`--yes` en CI).
 - **Tout fichier écrit** (`pull`, `export -o`, `run --file`) l'est avec des droits `0600`, de façon atomique, et est ajouté au `.gitignore` du dépôt s'il n'est pas déjà ignoré.
+
+### Agents de code IA (Claude Code, Codex, Cursor…)
+
+Les agents ont le réflexe d'écrire les variables dans un `.env`. Deux mécanismes les en empêchent :
+
+**1. Les instructions** : `coffre agent setup` (ou `coffre init --agents`, ou la question posée à la fin de `coffre init`) écrit dans le dossier du projet :
+
+| Fichier | Lu par |
+| --- | --- |
+| `AGENTS.md` : une section Coffre, entre marqueurs, sans toucher au reste du fichier | Codex, Cursor, Copilot, Gemini… |
+| `.claude/skills/coffre/SKILL.md` | Claude Code, dès qu'une tâche touche aux variables d'environnement |
+| `CLAUDE.md` : un rappel, seulement si le fichier existe déjà | Claude Code |
+
+Ces fichiers ne contiennent aucun secret : commitez-les pour que toute l'équipe et ses agents en profitent. Relancer la commande les met à jour.
+
+**2. Les garde-fous de la CLI** : quand elle détecte un agent (variables `CLAUDECODE`, `CODEX_SANDBOX`, `CURSOR_AGENT`, `GEMINI_CLI`, `AI_AGENT`, ou `COFFRE_AGENT=1` pour tout autre agent) :
+
+- `secrets list --reveal`, `secrets download` / `export` et `secrets pull` sont refusés : les valeurs n'arrivent pas dans la conversation du modèle et aucun `.env` n'est recréé ;
+- l'écriture (`set`, `delete`, `push`) n'est autorisée que dans `development`, sauf si `.coffre.json` en autorise d'autres :
+
+```json
+{ "projectId": "proj_xxx", "environment": "development", "agents": { "write": ["development", "staging"] } }
+```
+
+Ces garde-fous évitent les erreurs et les fuites accidentelles. Ils ne remplacent pas les droits du compte : un agent qui dispose du jeton peut toujours lancer `coffre run -- sh -c 'echo $X'`. Pour un agent autonome, utilisez un compte ou un rôle limité (lecteur, accès restreint par environnement).
 
 ### Comportement de `run`
 

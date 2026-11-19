@@ -134,7 +134,8 @@ func newLogoutCmd() *cobra.Command {
 }
 
 func newWhoamiCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	c := &cobra.Command{
 		Use:   "whoami",
 		Short: "Affiche le compte connecté",
 		Args:  cobra.NoArgs,
@@ -147,10 +148,16 @@ func newWhoamiCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("%s  (%s)\n", user.Email, strings.TrimRight(client.BaseURL, "/"))
+			apiURL := strings.TrimRight(client.BaseURL, "/")
+			if jsonOut {
+				return printJSON(map[string]any{"email": user.Email, "name": user.Name, "apiUrl": apiURL})
+			}
+			fmt.Printf("%s  (%s)\n", user.Email, apiURL)
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&jsonOut, "json", false, "résultat en JSON")
+	return c
 }
 
 func newVersionCmd() *cobra.Command {

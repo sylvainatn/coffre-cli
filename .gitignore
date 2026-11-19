@@ -4,3 +4,5 @@
 /npm/bin/coffre.exe
 /npm/node_modules/
 .DS_Store
+# Secrets locaux générés par coffre
+/.env

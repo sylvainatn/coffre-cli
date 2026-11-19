@@ -22,7 +22,10 @@ type targetFunc func() (*api.Client, string, string, error)
 // Noms acceptés par l'API (plus stricts que ceux tolérés dans un .env).
 var apiKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-const fileFlagUsage = "fichier .env local"
+const (
+	fileFlagUsage = "fichier .env local"
+	jsonFlagUsage = "résultat en JSON (agents IA, scripts) ; jamais de valeur de secret"
+)
 
 // readLocal lit et analyse le fichier local. missing = le fichier n'existe pas.
 func readLocal(path string) (f *dotenv.File, missing bool, err error) {
@@ -74,13 +77,14 @@ func printKeys(symbol, label string, keys []string) {
 
 func newDiffCmd(target targetFunc) *cobra.Command {
 	var file string
-	var exitCode bool
+	var exitCode, jsonOut bool
 	c := &cobra.Command{
 		Use:   "diff",
 		Short: "Compare le fichier .env local aux secrets de Coffre (valeurs jamais affichées)",
 		Example: `  coffre secrets diff
   coffre secrets diff --env staging --file .env.staging
-  coffre secrets diff --exit-code   # code 1 s'il y a des différences (CI)`,
+  coffre secrets diff --exit-code   # code 1 s'il y a des différences (CI)
+  coffre secrets diff --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, projectID, envSlug, err := target()
@@ -99,22 +103,35 @@ func newDiffCmd(target targetFunc) *cobra.Command {
 				return err
 			}
 			d := envdiff.Compare(f.Values(), remote)
-			if d.Empty() {
+
+			if jsonOut {
+				if err := printJSON(map[string]any{
+					"project":     projectID,
+					"environment": envSlug,
+					"file":        file,
+					"identical":   d.Empty(),
+					"onlyRemote":  orEmpty(d.OnlyRemote),
+					"onlyLocal":   orEmpty(d.OnlyLocal),
+					"changed":     orEmpty(d.Changed),
+				}); err != nil {
+					return err
+				}
+			} else if d.Empty() {
 				fmt.Printf("✓ %s identique à %s/%s (%d variable(s))\n", file, projectID, envSlug, len(remote))
-				return nil
+			} else {
+				fmt.Printf("%s ↔ %s/%s\n", file, projectID, envSlug)
+				printKeys("+", "dans Coffre, absente du fichier", d.OnlyRemote)
+				printKeys("-", "dans le fichier, absente de Coffre", d.OnlyLocal)
+				printKeys("~", "valeurs différentes", d.Changed)
+				fmt.Println()
+				if len(d.OnlyRemote)+len(d.Changed) > 0 {
+					fmt.Println("  coffre secrets pull   récupère les variables de Coffre")
+				}
+				if len(d.OnlyLocal) > 0 {
+					fmt.Println("  coffre secrets push   envoie les variables locales")
+				}
 			}
-			fmt.Printf("%s ↔ %s/%s\n", file, projectID, envSlug)
-			printKeys("+", "dans Coffre, absente du fichier", d.OnlyRemote)
-			printKeys("-", "dans le fichier, absente de Coffre", d.OnlyLocal)
-			printKeys("~", "valeurs différentes", d.Changed)
-			fmt.Println()
-			if len(d.OnlyRemote)+len(d.Changed) > 0 {
-				fmt.Println("  coffre secrets pull   récupère les variables de Coffre")
-			}
-			if len(d.OnlyLocal) > 0 {
-				fmt.Println("  coffre secrets push   envoie les variables locales")
-			}
-			if exitCode {
+			if exitCode && !d.Empty() {
 				return &exitCodeError{code: 1}
 			}
 			return nil
@@ -122,6 +139,7 @@ func newDiffCmd(target targetFunc) *cobra.Command {
 	}
 	c.Flags().StringVarP(&file, "file", "f", ".env", fileFlagUsage)
 	c.Flags().BoolVar(&exitCode, "exit-code", false, "terminer avec le code 1 s'il y a des différences")
+	c.Flags().BoolVar(&jsonOut, "json", false, jsonFlagUsage)
 	return c
 }
 
@@ -129,7 +147,7 @@ func newDiffCmd(target targetFunc) *cobra.Command {
 
 func newPullCmd(target targetFunc) *cobra.Command {
 	var file string
-	var overwrite, dryRun bool
+	var overwrite, dryRun, jsonOut bool
 	c := &cobra.Command{
 		Use:   "pull",
 		Short: "Ajoute au fichier .env les variables de Coffre qu'il n'a pas",
@@ -142,13 +160,17 @@ func newPullCmd(target targetFunc) *cobra.Command {
 - Rien n'est jamais supprimé du fichier.
 
 Le fichier est écrit avec des droits 0600 et ajouté au .gitignore s'il ne l'est pas.
-Pour ne pas avoir de fichier du tout : coffre run -- <commande>.`,
+Pour ne pas avoir de fichier du tout : coffre run -- <commande>.
+Désactivé pour les agents IA (ils ne doivent pas recréer de .env).`,
 		Example: `  coffre secrets pull
   coffre secrets pull --env staging --file .env.staging
   coffre secrets pull --overwrite   # Coffre fait foi pour toutes les valeurs
   coffre secrets pull --dry-run`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := refuseForAgent("secrets pull", "il écrirait les valeurs dans un .env ; utilisez coffre run -- <commande>"); err != nil {
+				return err
+			}
 			client, projectID, envSlug, err := target()
 			if err != nil {
 				return err
@@ -162,15 +184,10 @@ Pour ne pas avoir de fichier du tout : coffre run -- <commande>.`,
 				return err
 			}
 			d := envdiff.Compare(f.Values(), remote)
-			if len(d.OnlyRemote) == 0 && len(d.Changed) == 0 {
-				fmt.Printf("✓ %s est à jour avec %s/%s\n", file, projectID, envSlug)
-				hintPush(d.OnlyLocal)
-				return nil
-			}
 
 			// Valeurs différentes : Coffre ne les impose qu'avec l'accord de l'utilisateur
 			var replace, kept []string
-			askEach := !overwrite && !dryRun && interactive() && len(d.Changed) > 0
+			askEach := !overwrite && !dryRun && !jsonOut && interactive() && len(d.Changed) > 0
 			if askEach {
 				fmt.Fprintf(os.Stderr, "%d variable(s) ont une valeur locale différente de celle de Coffre.\n", len(d.Changed))
 			}
@@ -197,61 +214,76 @@ Pour ne pas avoir de fichier du tout : coffre run -- <commande>.`,
 				}
 			}
 
-			if dryRun {
+			write := !dryRun && (len(d.OnlyRemote) > 0 || len(replace) > 0)
+			if write {
+				for _, k := range replace {
+					f.Set(k, remote[k])
+				}
+				if len(d.OnlyRemote) > 0 {
+					f.AppendComment(fmt.Sprintf("Ajoutées par coffre depuis %s/%s le %s", projectID, envSlug, time.Now().Format("02/01/2006 15:04")))
+					for _, k := range d.OnlyRemote {
+						f.Set(k, remote[k])
+					}
+				}
+				if err := writeLocal(file, f.String()); err != nil {
+					return err
+				}
+			}
+
+			if jsonOut {
+				return printJSON(map[string]any{
+					"project":     projectID,
+					"environment": envSlug,
+					"file":        file,
+					"dryRun":      dryRun,
+					"created":     write && missing,
+					"added":       orEmpty(d.OnlyRemote),
+					"replaced":    orEmpty(replace),
+					"kept":        orEmpty(kept),
+					"onlyLocal":   orEmpty(d.OnlyLocal),
+				})
+			}
+
+			switch {
+			case len(d.OnlyRemote) == 0 && len(d.Changed) == 0:
+				fmt.Printf("✓ %s est à jour avec %s/%s\n", file, projectID, envSlug)
+			case dryRun:
 				fmt.Printf("%s ← %s/%s (simulation, rien n'est écrit)\n", file, projectID, envSlug)
 				printKeys("+", "serait ajoutée", d.OnlyRemote)
 				printKeys("~", "serait remplacée", replace)
 				printKeys("=", "valeur locale conservée", kept)
 				return nil
-			}
-			if len(d.OnlyRemote) == 0 && len(replace) == 0 {
+			case !write:
 				fmt.Printf("Rien à écrire : valeurs locales conservées (%s).\n", strings.Join(kept, ", "))
-				return nil
-			}
-
-			for _, k := range replace {
-				f.Set(k, remote[k])
-			}
-			if len(d.OnlyRemote) > 0 {
-				f.AppendComment(fmt.Sprintf("Ajoutées par coffre depuis %s/%s le %s", projectID, envSlug, time.Now().Format("02/01/2006 15:04")))
-				for _, k := range d.OnlyRemote {
-					f.Set(k, remote[k])
+			default:
+				verb := "mis à jour"
+				if missing {
+					verb = "créé"
 				}
+				fmt.Printf("✓ %s %s depuis %s/%s : %d ajoutée(s), %d remplacée(s)\n", file, verb, projectID, envSlug, len(d.OnlyRemote), len(replace))
+				if len(kept) > 0 {
+					fmt.Printf("  valeur locale conservée : %s (--overwrite pour prendre celle de Coffre)\n", strings.Join(kept, ", "))
+				}
+				fmt.Fprintln(os.Stderr, "  astuce : coffre run -- <commande> injecte les secrets sans fichier .env")
 			}
-			if err := writeLocal(file, f.String()); err != nil {
-				return err
+			if len(d.OnlyLocal) > 0 {
+				fmt.Printf("  %d variable(s) seulement en local (%s) : coffre secrets push pour les envoyer\n", len(d.OnlyLocal), strings.Join(d.OnlyLocal, ", "))
 			}
-
-			verb := "mis à jour"
-			if missing {
-				verb = "créé"
-			}
-			fmt.Printf("✓ %s %s depuis %s/%s : %d ajoutée(s), %d remplacée(s)\n", file, verb, projectID, envSlug, len(d.OnlyRemote), len(replace))
-			if len(kept) > 0 {
-				fmt.Printf("  valeur locale conservée : %s (--overwrite pour prendre celle de Coffre)\n", strings.Join(kept, ", "))
-			}
-			hintPush(d.OnlyLocal)
-			fmt.Fprintln(os.Stderr, "  astuce : coffre run -- <commande> injecte les secrets sans fichier .env")
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&file, "file", "f", ".env", fileFlagUsage)
 	c.Flags().BoolVar(&overwrite, "overwrite", false, "remplacer les valeurs locales qui diffèrent de Coffre")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "afficher ce qui serait fait, sans écrire")
+	c.Flags().BoolVar(&jsonOut, "json", false, jsonFlagUsage)
 	return c
-}
-
-func hintPush(onlyLocal []string) {
-	if len(onlyLocal) > 0 {
-		fmt.Printf("  %d variable(s) seulement en local (%s) : coffre secrets push pour les envoyer\n", len(onlyLocal), strings.Join(onlyLocal, ", "))
-	}
 }
 
 /* --------------------------------- push ---------------------------------- */
 
 func newPushCmd(target targetFunc) *cobra.Command {
 	var file string
-	var update, dryRun, yes bool
+	var update, dryRun, yes, jsonOut bool
 	c := &cobra.Command{
 		Use:   "push",
 		Short: "Envoie dans Coffre les variables du fichier .env qu'il n'a pas",
@@ -263,7 +295,8 @@ func newPushCmd(target targetFunc) *cobra.Command {
   (l'ancienne valeur reste dans l'historique et peut être restaurée).
 - Rien n'est jamais supprimé de Coffre.
 
-En staging et en production, une confirmation est demandée (--yes pour la CI).`,
+En staging et en production, une confirmation est demandée (--yes pour la CI).
+Un agent IA ne peut écrire que dans les environnements autorisés par .coffre.json.`,
 		Example: `  coffre secrets push
   coffre secrets push --env staging --file .env.staging
   coffre secrets push --update --dry-run`,
@@ -272,6 +305,11 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 			client, projectID, envSlug, err := target()
 			if err != nil {
 				return err
+			}
+			if !dryRun {
+				if err := checkAgentWrite(envSlug); err != nil {
+					return err
+				}
 			}
 			f, missing, err := readLocal(file)
 			if err != nil {
@@ -290,7 +328,7 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 				}
 			}
 			sort.Strings(invalid)
-			if len(invalid) > 0 {
+			if len(invalid) > 0 && !jsonOut {
 				fmt.Fprintf(os.Stderr, "⚠ ignorée(s), nom non accepté par Coffre (lettres, chiffres et _) : %s\n", strings.Join(invalid, ", "))
 			}
 
@@ -299,28 +337,55 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 				return err
 			}
 			d := envdiff.Compare(local, remote)
-			toUpdate := []string{}
+			var toUpdate []string
 			if update {
 				toUpdate = d.Changed
 			}
-			if len(d.OnlyLocal) == 0 && len(toUpdate) == 0 {
-				fmt.Printf("✓ rien à envoyer : %s/%s a déjà toutes les variables de %s\n", projectID, envSlug, file)
-				if len(d.Changed) > 0 {
-					fmt.Printf("  %d valeur(s) différente(s) (%s) : --update pour les envoyer\n", len(d.Changed), strings.Join(d.Changed, ", "))
+			result := func(created, skipped []string, updated []string) error {
+				if !jsonOut {
+					return nil
 				}
-				return nil
+				var notSent []string
+				if !update {
+					notSent = d.Changed
+				}
+				return printJSON(map[string]any{
+					"project":     projectID,
+					"environment": envSlug,
+					"file":        file,
+					"dryRun":      dryRun,
+					"created":     orEmpty(created),
+					"updated":     orEmpty(updated),
+					"skipped":     orEmpty(skipped),
+					"notSent":     orEmpty(notSent),
+					"invalid":     orEmpty(invalid),
+				})
 			}
 
-			fmt.Printf("%s → %s/%s\n", file, projectID, envSlug)
-			printKeys("+", "nouvelle", d.OnlyLocal)
-			printKeys("~", "mise à jour", toUpdate)
+			if len(d.OnlyLocal) == 0 && len(toUpdate) == 0 {
+				if !jsonOut {
+					fmt.Printf("✓ rien à envoyer : %s/%s a déjà toutes les variables de %s\n", projectID, envSlug, file)
+					if len(d.Changed) > 0 {
+						fmt.Printf("  %d valeur(s) différente(s) (%s) : --update pour les envoyer\n", len(d.Changed), strings.Join(d.Changed, ", "))
+					}
+				}
+				return result(nil, nil, nil)
+			}
+
+			if !jsonOut {
+				fmt.Printf("%s → %s/%s\n", file, projectID, envSlug)
+				printKeys("+", "nouvelle", d.OnlyLocal)
+				printKeys("~", "mise à jour", toUpdate)
+			}
 			if dryRun {
-				fmt.Println("(simulation, rien n'est envoyé)")
-				return nil
+				if !jsonOut {
+					fmt.Println("(simulation, rien n'est envoyé)")
+				}
+				return result(d.OnlyLocal, nil, toUpdate)
 			}
 
 			if !yes && (sensitiveEnv(envSlug) || len(toUpdate) > 0) {
-				if !interactive() {
+				if jsonOut || !interactive() {
 					return fmt.Errorf("écriture dans %s : relancez avec --yes pour confirmer", envSlug)
 				}
 				if !confirm(fmt.Sprintf("Envoyer ces %d variable(s) dans %s ?", len(d.OnlyLocal)+len(toUpdate), envSlug)) {
@@ -328,7 +393,7 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 				}
 			}
 
-			created, skipped := 0, []string(nil)
+			var created, skipped []string
 			if len(d.OnlyLocal) > 0 {
 				secrets := make([]api.Secret, 0, len(d.OnlyLocal))
 				for _, k := range d.OnlyLocal {
@@ -338,7 +403,7 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 				if err != nil {
 					return err
 				}
-				created, skipped = len(res.Created), res.Skipped
+				created, skipped = res.Created, res.Skipped
 			}
 			if len(toUpdate) > 0 {
 				secrets := make([]api.Secret, 0, len(toUpdate))
@@ -350,7 +415,10 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 				}
 			}
 
-			fmt.Printf("✓ %s/%s : %d créée(s), %d mise(s) à jour\n", projectID, envSlug, created, len(toUpdate))
+			if jsonOut {
+				return result(created, skipped, toUpdate)
+			}
+			fmt.Printf("✓ %s/%s : %d créée(s), %d mise(s) à jour\n", projectID, envSlug, len(created), len(toUpdate))
 			if len(skipped) > 0 {
 				fmt.Printf("  déjà créée(s) entre-temps par quelqu'un d'autre, non écrasée(s) : %s\n", strings.Join(skipped, ", "))
 			}
@@ -364,5 +432,6 @@ En staging et en production, une confirmation est demandée (--yes pour la CI).`
 	c.Flags().BoolVar(&update, "update", false, "mettre aussi à jour les variables dont la valeur diffère")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "afficher ce qui serait envoyé, sans rien envoyer")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "ne pas demander de confirmation")
+	c.Flags().BoolVar(&jsonOut, "json", false, jsonFlagUsage)
 	return c
 }

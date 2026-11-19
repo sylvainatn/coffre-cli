@@ -33,8 +33,10 @@ checksum:
 # Nécessite un dépôt <org>/homebrew-tap et un secret HOMEBREW_TAP_TOKEN.
 brews:
   - name: coffre
+    # Désactivé tant que le dépôt sylvainatn/homebrew-tap n'existe pas (passer à false ensuite)
+    skip_upload: true
     repository:
-      owner: coffre-dev
+      owner: sylvainatn
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula

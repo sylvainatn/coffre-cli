@@ -162,6 +162,37 @@ func (c *Client) Logout(ctx context.Context) error {
 	return c.do(ctx, "POST", "/v1/auth/logout", map[string]string{}, nil)
 }
 
+// ProjectSummary : un projet de la liste (sans ses environnements).
+type ProjectSummary struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Role             string `json:"role"`
+	EnvironmentCount int    `json:"environmentCount"`
+}
+
+func (c *Client) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
+	var out struct {
+		Projects []ProjectSummary `json:"projects"`
+	}
+	if err := c.do(ctx, "GET", "/v1/projects", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Projects, nil
+}
+
+// CreateProject crée un projet (avec ses environnements par défaut) et renvoie son ID.
+func (c *Client) CreateProject(ctx context.Context, name string) (string, error) {
+	var out struct {
+		Project struct {
+			ID string `json:"id"`
+		} `json:"project"`
+	}
+	if err := c.do(ctx, "POST", "/v1/projects", map[string]string{"name": name}, &out); err != nil {
+		return "", err
+	}
+	return out.Project.ID, nil
+}
+
 func (c *Client) GetProject(ctx context.Context, projectID string) (*Project, error) {
 	var out struct {
 		Project Project `json:"project"`

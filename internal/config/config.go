@@ -21,8 +21,23 @@ type Global struct {
 
 // Project est le fichier .coffre.json, versionnable : il ne contient aucun secret.
 type Project struct {
-	ProjectID   string `json:"projectId"`
-	Environment string `json:"environment"`
+	ProjectID   string        `json:"projectId"`
+	Environment string        `json:"environment"`
+	Agents      *AgentsPolicy `json:"agents,omitempty"`
+}
+
+// AgentsPolicy : ce que les agents de code IA ont le droit de faire dans ce dépôt.
+type AgentsPolicy struct {
+	// Environnements où un agent peut écrire (défaut : development).
+	Write []string `json:"write,omitempty"`
+}
+
+// AgentWritableEnvironments : environnements où un agent peut créer ou modifier des secrets.
+func (p *Project) AgentWritableEnvironments() []string {
+	if p != nil && p.Agents != nil && len(p.Agents.Write) > 0 {
+		return p.Agents.Write
+	}
+	return []string{"development"}
 }
 
 func globalPath() (string, error) {
@@ -97,6 +112,22 @@ func FindProject() (*Project, string, error) {
 		}
 		dir = parent
 	}
+}
+
+// ReadProject lit .coffre.json dans ce dossier précis (nil s'il n'existe pas).
+func ReadProject(dir string) (*Project, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ProjectFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var p Project
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("%s invalide : %w", ProjectFileName, err)
+	}
+	return &p, nil
 }
 
 func WriteProject(dir string, p *Project) (string, error) {

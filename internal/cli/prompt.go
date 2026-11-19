@@ -27,6 +27,40 @@ func ask(question string) string {
 	return strings.ToLower(strings.TrimSpace(answer))
 }
 
+// choose affiche une liste numérotée et renvoie l'index choisi (0 à len(options)-1).
+// Entrée vide : choix par défaut (def). Redemande tant que la réponse est invalide.
+func choose(question string, options []string, def int) int {
+	fmt.Fprintln(os.Stderr, question)
+	for i, o := range options {
+		marker := " "
+		if i == def {
+			marker = "›"
+		}
+		fmt.Fprintf(os.Stderr, "  %s %d. %s\n", marker, i+1, o)
+	}
+	for {
+		answer := ask(fmt.Sprintf("Votre choix [%d] : ", def+1))
+		if answer == "" {
+			return def
+		}
+		var n int
+		if _, err := fmt.Sscanf(answer, "%d", &n); err == nil && n >= 1 && n <= len(options) {
+			return n - 1
+		}
+		fmt.Fprintf(os.Stderr, "  Entrez un nombre entre 1 et %d.\n", len(options))
+	}
+}
+
+// askDefault pose une question ouverte ; une réponse vide renvoie def. La casse est conservée.
+func askDefault(question, def string) string {
+	fmt.Fprintf(os.Stderr, "%s [%s] : ", question, def)
+	answer, _ := stdinReader.ReadString('\n')
+	if answer = strings.TrimSpace(answer); answer == "" {
+		return def
+	}
+	return answer
+}
+
 // confirm : oui / non, non par défaut.
 func confirm(question string) bool {
 	switch ask(question + " [o/N] ") {

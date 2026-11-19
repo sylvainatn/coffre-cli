@@ -1,5 +1,5 @@
 VERSION ?= dev
-API_URL ?= http://localhost:4000
+API_URL ?= https://api.sylvainanton.fr
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.defaultAPIURL=$(API_URL)
 
 .PHONY: build test vet snapshot

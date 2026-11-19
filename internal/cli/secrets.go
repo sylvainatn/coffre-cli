@@ -31,13 +31,18 @@ func newSecretsCmd() *cobra.Command {
 		return client, projectID, envSlug, err
 	}
 
-	var reveal bool
+	var reveal, listJSON bool
 	list := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "Liste les secrets (valeurs masquées par défaut)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if reveal {
+				if err := refuseForAgent("--reveal", "les valeurs finiraient dans la conversation du modèle"); err != nil {
+					return err
+				}
+			}
 			client, projectID, envSlug, err := target()
 			if err != nil {
 				return err
@@ -45,6 +50,18 @@ func newSecretsCmd() *cobra.Command {
 			secrets, err := client.GetSecrets(cmd.Context(), projectID, envSlug)
 			if err != nil {
 				return err
+			}
+			if listJSON {
+				// Noms seulement, sauf --reveal (refusé aux agents)
+				items := make([]map[string]any, len(secrets))
+				for i, s := range secrets {
+					item := map[string]any{"key": s.Key, "empty": s.Value == ""}
+					if reveal {
+						item["value"] = s.Value
+					}
+					items[i] = item
+				}
+				return printJSON(map[string]any{"project": projectID, "environment": envSlug, "secrets": items})
 			}
 			if len(secrets) == 0 {
 				fmt.Printf("Aucun secret dans %s/%s\n", projectID, envSlug)
@@ -61,13 +78,15 @@ func newSecretsCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
-	list.Flags().BoolVar(&reveal, "reveal", false, "afficher les valeurs en clair")
+	list.Flags().BoolVar(&reveal, "reveal", false, "afficher les valeurs en clair (refusé aux agents IA)")
+	list.Flags().BoolVar(&listJSON, "json", false, "noms des variables en JSON (valeurs seulement avec --reveal)")
 
 	set := &cobra.Command{
-		Use:     "set KEY=VALUE [KEY=VALUE...]",
-		Short:   "Crée ou met à jour des secrets",
-		Example: `  coffre secrets set STRIPE_KEY=sk_test_123 DEBUG=true`,
-		Args:    cobra.MinimumNArgs(1),
+		Use:   "set KEY=VALUE [KEY=VALUE...]",
+		Short: "Crée ou met à jour des secrets",
+		Example: `  coffre secrets set STRIPE_KEY=sk_test_123 DEBUG=true
+  coffre secrets set STRIPE_KEY=   # variable vide, à compléter par l'équipe`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			secrets := make([]api.Secret, 0, len(args))
 			for _, arg := range args {
@@ -79,6 +98,9 @@ func newSecretsCmd() *cobra.Command {
 			}
 			client, projectID, envSlug, err := target()
 			if err != nil {
+				return err
+			}
+			if err := checkAgentWrite(envSlug); err != nil {
 				return err
 			}
 			if err := client.SetSecrets(cmd.Context(), projectID, envSlug, secrets); err != nil {
@@ -97,6 +119,9 @@ func newSecretsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, projectID, envSlug, err := target()
 			if err != nil {
+				return err
+			}
+			if err := checkAgentWrite(envSlug); err != nil {
 				return err
 			}
 			if err := client.DeleteSecret(cmd.Context(), projectID, envSlug, args[0]); err != nil {
@@ -118,12 +143,16 @@ Avec -o, le fichier est remplacé entièrement, écrit avec des droits 0600 et a
 au .gitignore s'il ne l'est pas. Pour compléter un .env existant sans l'écraser :
 coffre secrets pull. Pour ne pas avoir de fichier du tout : coffre run -- <commande>.
 
-Formats : dotenv (défaut), json, yaml, docker (docker run --env-file), k8s (Secret).`,
+Formats : dotenv (défaut), json, yaml, docker (docker run --env-file), k8s (Secret).
+Désactivé pour les agents IA : les valeurs finiraient dans la conversation du modèle.`,
 		Example: `  coffre secrets download --env production > /run/secrets/app.env
   coffre secrets export -o .env
   coffre secrets export --env production --format k8s --name mon-app | kubectl apply -f -`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := refuseForAgent("secrets download / export", "les valeurs finiraient dans la conversation du modèle ou dans un .env ; utilisez coffre run -- <commande>"); err != nil {
+				return err
+			}
 			client, projectID, envSlug, err := target()
 			if err != nil {
 				return err

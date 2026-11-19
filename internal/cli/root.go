@@ -47,6 +47,7 @@ sans fichier .env sur le poste.
 		newInitCmd(),
 		newRunCmd(),
 		newSecretsCmd(),
+		newAgentCmd(),
 		newVersionCmd(),
 	)
 	return root
